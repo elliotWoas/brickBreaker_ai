@@ -1,0 +1,456 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Brick Breaker AI — Deep Q-Network</title>
+  <style>
+    :root {
+      --bg: #0f172a;
+      --panel: #1e293b;
+      --fg: #e2e8f0;
+      --accent: #38bdf8;
+      --accent-2: #a855f7;
+      --good: #22c55e;
+      --bad: #ef4444;
+      --border: #334155;
+    }
+
+    * { box-sizing: border-box; }
+
+    body {
+      margin: 0;
+      font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+      background: var(--bg);
+      color: var(--fg);
+      min-height: 100vh;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      padding: 24px 16px 48px;
+    }
+
+    h1 {
+      margin: 0 0 4px;
+      font-size: 1.75rem;
+      background: linear-gradient(90deg, var(--accent), var(--accent-2));
+      -webkit-background-clip: text;
+      background-clip: text;
+      color: transparent;
+      letter-spacing: 0.3px;
+    }
+
+    .subtitle {
+      color: #94a3b8;
+      margin: 0 0 20px;
+      font-size: 0.9rem;
+    }
+
+    .layout {
+      display: grid;
+      grid-template-columns: auto 280px;
+      gap: 20px;
+      max-width: 100%;
+    }
+
+    @media (max-width: 960px) {
+      .layout { grid-template-columns: 1fr; }
+    }
+
+    .canvas-card, .panel {
+      background: var(--panel);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      padding: 14px;
+      box-shadow: 0 10px 30px rgba(0,0,0,0.25);
+    }
+
+    canvas {
+      display: block;
+      background: #020617;
+      border-radius: 8px;
+      max-width: 100%;
+      height: auto;
+      image-rendering: pixelated;
+    }
+
+    .panel h2 {
+      margin: 0 0 12px;
+      font-size: 1rem;
+      color: #cbd5e1;
+      border-bottom: 1px solid var(--border);
+      padding-bottom: 6px;
+    }
+
+    .stat-grid {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 8px 12px;
+      margin-bottom: 14px;
+    }
+
+    .stat {
+      display: flex;
+      flex-direction: column;
+      background: #0f172a;
+      border: 1px solid var(--border);
+      padding: 8px 10px;
+      border-radius: 8px;
+    }
+
+    .stat .label {
+      font-size: 0.7rem;
+      color: #94a3b8;
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+    }
+
+    .stat .value {
+      font-size: 1.1rem;
+      font-weight: 600;
+      color: var(--fg);
+    }
+
+    .stat.score .value { color: var(--accent); }
+    .stat.lives .value { color: var(--good); }
+    .stat.best  .value { color: var(--accent-2); }
+    .stat.eps   .value { color: #fbbf24; }
+
+    .controls {
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+    }
+
+    button {
+      appearance: none;
+      border: 1px solid var(--border);
+      background: #0f172a;
+      color: var(--fg);
+      padding: 10px 14px;
+      border-radius: 8px;
+      font-weight: 600;
+      cursor: pointer;
+      transition: all 0.15s ease;
+      font-size: 0.85rem;
+    }
+    button:hover:not(:disabled) {
+      border-color: var(--accent);
+      color: var(--accent);
+    }
+    button.primary {
+      background: linear-gradient(135deg, var(--accent), var(--accent-2));
+      border-color: transparent;
+      color: #fff;
+    }
+    button.primary:hover { filter: brightness(1.1); color: #fff; }
+    button:disabled { opacity: 0.5; cursor: not-allowed; }
+
+    .status {
+      margin-top: 14px;
+      font-size: 0.8rem;
+      padding: 10px;
+      border-radius: 8px;
+      background: #0f172a;
+      border: 1px solid var(--border);
+    }
+    .status.ok    { border-color: var(--good); color: var(--good); }
+    .status.err   { border-color: var(--bad);  color: var(--bad); }
+    .status.idle  { color: #94a3b8; }
+
+    .legend {
+      margin-top: 14px;
+      padding: 10px;
+      font-size: 0.75rem;
+      color: #94a3b8;
+      background: #0b1220;
+      border-radius: 8px;
+      line-height: 1.5;
+    }
+
+    .legend code {
+      background: #0f172a;
+      padding: 1px 5px;
+      border-radius: 4px;
+      color: #cbd5e1;
+      font-size: 0.72rem;
+    }
+
+    .swatches {
+      display: flex;
+      gap: 6px;
+      margin-top: 6px;
+    }
+    .sw {
+      width: 16px; height: 12px; border-radius: 3px;
+    }
+  </style>
+</head>
+<body>
+  <h1>Brick Breaker AI</h1>
+  <p class="subtitle">Deep Q-Network playing in real time · 30 FPS over WebSocket</p>
+
+  <div class="layout">
+    <div class="canvas-card">
+      <canvas id="game" width="600" height="400"></canvas>
+    </div>
+
+    <aside class="panel">
+      <h2>Live Stats</h2>
+      <div class="stat-grid">
+        <div class="stat score">
+          <span class="label">Score</span>
+          <span class="value" id="stat-score">0</span>
+        </div>
+        <div class="stat lives">
+          <span class="label">Lives</span>
+          <span class="value" id="stat-lives">3</span>
+        </div>
+        <div class="stat bricks">
+          <span class="label">Bricks Left</span>
+          <span class="value" id="stat-bricks">32</span>
+        </div>
+        <div class="stat best">
+          <span class="label">Best Score</span>
+          <span class="value" id="stat-best">0</span>
+        </div>
+        <div class="stat eps">
+          <span class="label">Episodes</span>
+          <span class="value" id="stat-eps">0</span>
+        </div>
+        <div class="stat">
+          <span class="label">Last Action</span>
+          <span class="value" id="stat-action">—</span>
+        </div>
+      </div>
+
+      <h2>Controls</h2>
+      <div class="controls">
+        <button class="primary" id="btn-start">▶ Start AI Play</button>
+        <button id="btn-stop" disabled>■ Stop</button>
+      </div>
+
+      <div class="status idle" id="status">
+        Status: idle · click <b>Start AI Play</b> to begin streaming.
+      </div>
+
+      <div class="legend">
+        <b>Action mapping:</b><br />
+        <code>0 = Stay</code> &nbsp; <code>1 = Left</code> &nbsp; <code>2 = Right</code>
+        <br /><br />
+        <b>Reward system:</b><br />
+        +10 per brick · +0.1 paddle hit · −10 lost life · −100 game over
+        <div class="swatches" id="brick-swatches"></div>
+      </div>
+    </aside>
+  </div>
+
+  <script>
+    // ---------- Constants ----------
+    const PADDLE_COLOR = "#38bdf8";
+    const BALL_COLOR   = "#f8fafc";
+    const BRICK_COLORS = ["#ef4444", "#f97316", "#eab308", "#22c55e"];
+    const BRICK_STROKE = "#0f172a";
+
+    const ACTION_NAMES = ["Stay", "Left", "Right"];
+
+    // ---------- DOM ----------
+    const canvas     = document.getElementById("game");
+    const ctx        = canvas.getContext("2d");
+    const btnStart   = document.getElementById("btn-start");
+    const btnStop    = document.getElementById("btn-stop");
+    const statusEl   = document.getElementById("status");
+    const scoreEl    = document.getElementById("stat-score");
+    const livesEl    = document.getElementById("stat-lives");
+    const bricksEl   = document.getElementById("stat-bricks");
+    const bestEl     = document.getElementById("stat-best");
+    const epsEl      = document.getElementById("stat-eps");
+    const actionEl   = document.getElementById("stat-action");
+    const swatchBox  = document.getElementById("brick-swatches");
+
+    BRICK_COLORS.forEach(c => {
+      const s = document.createElement("div");
+      s.className = "sw";
+      s.style.background = c;
+      swatchBox.appendChild(s);
+    });
+
+    // ---------- Rendering ----------
+    function clearCanvas(w, h) {
+      ctx.fillStyle = "#020617";
+      ctx.fillRect(0, 0, w, h);
+      // Subtle grid for visual texture
+      ctx.strokeStyle = "rgba(148, 163, 184, 0.04)";
+      ctx.lineWidth = 1;
+      for (let x = 0; x <= w; x += 40) {
+        ctx.beginPath(); ctx.moveTo(x, 0); ctx.lineTo(x, h); ctx.stroke();
+      }
+      for (let y = 0; y <= h; y += 40) {
+        ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(w, y); ctx.stroke();
+      }
+    }
+
+    function drawBrick(x, y, w, h, color) {
+      ctx.fillStyle = color;
+      roundRect(ctx, x, y, w, h, 3, true, false);
+      ctx.strokeStyle = BRICK_STROKE;
+      ctx.lineWidth = 1.5;
+      roundRect(ctx, x, y, w, h, 3, false, true);
+      // Tiny highlight
+      ctx.fillStyle = "rgba(255,255,255,0.10)";
+      roundRect(ctx, x + 2, y + 2, w - 4, Math.max(3, h * 0.28), 2, true, false);
+    }
+
+    function drawPaddle(p) {
+      const grad = ctx.createLinearGradient(p.x, p.y, p.x, p.y + p.h);
+      grad.addColorStop(0, "#7dd3fc");
+      grad.addColorStop(1, "#0ea5e9");
+      ctx.fillStyle = grad;
+      roundRect(ctx, p.x, p.y, p.w, p.h, 5, true, false);
+      ctx.strokeStyle = "#0c4a6e";
+      ctx.lineWidth = 1;
+      roundRect(ctx, p.x, p.y, p.w, p.h, 5, false, true);
+    }
+
+    function drawBall(b) {
+      ctx.beginPath();
+      const grad = ctx.createRadialGradient(b.x - b.r*0.3, b.y - b.r*0.3, 1, b.x, b.y, b.r);
+      grad.addColorStop(0, "#ffffff");
+      grad.addColorStop(1, "#bae6fd");
+      ctx.fillStyle = grad;
+      ctx.arc(b.x, b.y, b.r, 0, Math.PI * 2);
+      ctx.fill();
+    }
+
+    function roundRect(ctx, x, y, w, h, r, fill, stroke) {
+      if (typeof r === "number") r = {tl:r,tr:r,br:r,bl:r};
+      ctx.beginPath();
+      ctx.moveTo(x + r.tl, y);
+      ctx.lineTo(x + w - r.tr, y);
+      ctx.quadraticCurveTo(x + w, y, x + w, y + r.tr);
+      ctx.lineTo(x + w, y + h - r.br);
+      ctx.quadraticCurveTo(x + w, y + h, x + w - r.br, y + h);
+      ctx.lineTo(x + r.bl, y + h);
+      ctx.quadraticCurveTo(x, y + h, x, y + h - r.bl);
+      ctx.lineTo(x, y + r.tl);
+      ctx.quadraticCurveTo(x, y, x + r.tl, y);
+      ctx.closePath();
+      if (fill)   ctx.fill();
+      if (stroke) ctx.stroke();
+    }
+
+    function renderFrame(frame) {
+      const { width: W, height: H, paddle, ball, bricks } = frame;
+
+      // Resize canvas backing store only when needed
+      if (canvas.width  !== W) canvas.width  = W;
+      if (canvas.height !== H) canvas.height = H;
+
+      clearCanvas(W, H);
+
+      // Bricks
+      for (const b of bricks) {
+        const color = BRICK_COLORS[b.row % BRICK_COLORS.length];
+        drawBrick(b.x, b.y, b.w, b.h, color);
+      }
+
+      // Paddle
+      drawPaddle(paddle);
+
+      // Ball
+      drawBall(ball);
+    }
+
+    function updateStats(frame) {
+      scoreEl.textContent  = frame.score;
+      livesEl.textContent  = frame.lives;
+      bricksEl.textContent = frame.remaining_bricks;
+
+      const meta = frame.meta || {};
+      bestEl.textContent   = meta.best_score  || 0;
+      epsEl.textContent    = meta.episodes_played || 0;
+      const act = meta.action;
+      actionEl.textContent = (act !== undefined) ? ACTION_NAMES[act] || "?" : "—";
+    }
+
+    // ---------- WebSocket ----------
+    let ws = null;
+    let reconnectTimer = null;
+
+    function setStatus(text, cls = "idle") {
+      statusEl.className = "status " + cls;
+      statusEl.innerHTML = text;
+    }
+
+    function connectPlay() {
+      const proto = location.protocol === "https:" ? "wss:" : "ws:";
+      const url = `${proto}//${location.host}/ws/play`;
+
+      setStatus("Connecting to <code>/ws/play</code>…", "idle");
+
+      try {
+        ws = new WebSocket(url);
+      } catch (err) {
+        setStatus(`<b>Error:</b> ${err.message}`, "err");
+        return;
+      }
+
+      ws.addEventListener("open", () => {
+        setStatus("Connected · streaming at 30 FPS.", "ok");
+        btnStart.disabled = true;
+        btnStop.disabled  = false;
+      });
+
+      ws.addEventListener("message", (ev) => {
+        try {
+          const frame = JSON.parse(ev.data);
+          renderFrame(frame);
+          updateStats(frame);
+        } catch (err) {
+          console.warn("Bad frame:", err);
+        }
+      });
+
+      ws.addEventListener("error", () => {
+        setStatus("WebSocket error — check the server console.", "err");
+      });
+
+      ws.addEventListener("close", () => {
+        btnStart.disabled = false;
+        btnStop.disabled  = true;
+        if (reconnectTimer !== "stopped-manually") {
+          setStatus("Disconnected. Press <b>Start AI Play</b> to reconnect.", "idle");
+        }
+        ws = null;
+      });
+    }
+
+    function disconnectPlay() {
+      reconnectTimer = "stopped-manually";
+      if (ws) {
+        try { ws.close(); } catch (_) { /* noop */ }
+      }
+      btnStart.disabled = false;
+      btnStop.disabled  = true;
+      setStatus("Stopped by user.", "idle");
+      setTimeout(() => { reconnectTimer = null; }, 500);
+    }
+
+    // ---------- Initial placeholder frame ----------
+    (function drawPlaceholder() {
+      clearCanvas(canvas.width, canvas.height);
+      ctx.fillStyle = "#94a3b8";
+      ctx.font = "600 18px system-ui, sans-serif";
+      ctx.textAlign = "center";
+      ctx.fillText("Click Start AI Play to begin", canvas.width/2, canvas.height/2 - 10);
+      ctx.font = "400 12px system-ui, sans-serif";
+      ctx.fillStyle = "#64748b";
+      ctx.fillText("Frames stream via WebSocket at 30 FPS", canvas.width/2, canvas.height/2 + 14);
+    })();
+
+    // ---------- Hook buttons ----------
+    btnStart.addEventListener("click", connectPlay);
+    btnStop.addEventListener("click",  disconnectPlay);
+  </script>
+</body>
+</html>
