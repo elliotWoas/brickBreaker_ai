@@ -1,4 +1,5 @@
 import asyncio
+import argparse
 import json
 import os
 from pathlib import Path
@@ -19,6 +20,8 @@ FPS = 30
 FRAME_INTERVAL = 1.0 / FPS  # ~33ms per frame
 
 CHECKPOINT_PATH = Path(__file__).parent / "dqn_checkpoint.pth"
+CHECKPOINT_EVERY_EPISODES = int(os.getenv("CHECKPOINT_EVERY_EPISODES", "5"))
+TRAIN_MAX_STEPS = int(os.getenv("TRAIN_MAX_STEPS", "2000"))
 
 # Brick colors per row (top -> bottom)
 BRICK_COLORS = [
@@ -48,8 +51,8 @@ def health_check():
     return {"status": "ok", "checkpoint_exists": CHECKPOINT_PATH.exists()}
 
 
-def _create_agent_and_env():
-    """Helper to build env + agent pair used during playback."""
+def _create_agent_and_env(training=False):
+    """Build the environment and DQN agent used for playback or training."""
     env = BrickBreakerEnv()
     state_dim = env.observation_space.shape[0]
     action_dim = env.action_space.n
@@ -58,8 +61,9 @@ def _create_agent_and_env():
         state_dim=state_dim,
         action_dim=action_dim,
         hidden_dim=128,
-        epsilon_start=0.0,  # No exploration when playing back
-        epsilon_end=0.0,
+        epsilon_start=1.0 if training else 0.0,
+        epsilon_end=0.01 if training else 0.0,
+        epsilon_decay=0.995,
     )
 
     # Load trained weights if available
@@ -75,6 +79,93 @@ def _create_agent_and_env():
     return env, agent
 
 
+def _save_checkpoint(agent, episode):
+    """Save the current DQN state and report the result in the server console."""
+    try:
+        agent.save(str(CHECKPOINT_PATH))
+        print(
+            f"[train] saved checkpoint after episode {episode} -> {CHECKPOINT_PATH}",
+            flush=True,
+        )
+    except Exception as e:
+        print(f"[train] failed to save checkpoint after episode {episode}: {e}", flush=True)
+
+
+def _run_training_episode(env, agent, max_steps=TRAIN_MAX_STEPS):
+    """Run one full training episode, including replay optimization steps."""
+    state, _ = env.reset()
+    total_reward = 0.0
+    losses = []
+    steps = 0
+    final_info = {}
+
+    for step in range(max_steps):
+        action = agent.select_action(state, training=True)
+        next_state, reward, terminated, truncated, info = env.step(action)
+        done = terminated or truncated
+
+        agent.store_transition(state, action, reward, next_state, done)
+        loss = agent.train_step()
+        if loss is not None:
+            losses.append(loss)
+
+        state = next_state
+        total_reward += reward
+        steps += 1
+        final_info = info
+
+        if done:
+            break
+
+    agent.finish_episode()
+
+    avg_loss = sum(losses) / len(losses) if losses else 0.0
+    return {
+        "steps": steps,
+        "total_reward": float(total_reward),
+        "avg_loss": float(avg_loss),
+        "epsilon": float(agent.epsilon),
+        "score": int(final_info.get("score", 0)),
+        "remaining_bricks": int(final_info.get("remaining_bricks", env.TOTAL_BRICKS)),
+        "buffer_size": len(agent.memory),
+        "optimizer_steps": agent.train_step_count,
+    }
+
+
+def run_training_loop(num_episodes=300, max_steps=TRAIN_MAX_STEPS):
+    """Run pretraining from the console and persist checkpoints regularly."""
+    env, agent = _create_agent_and_env(training=True)
+    recent_rewards = []
+
+    print(
+        f"[train] starting training for {num_episodes} episodes | "
+        f"epsilon={agent.epsilon:.3f}, decay={agent.epsilon_decay}, "
+        f"checkpoint_every={CHECKPOINT_EVERY_EPISODES}",
+        flush=True,
+    )
+
+    for episode in range(agent.episodes_trained + 1, agent.episodes_trained + num_episodes + 1):
+        stats = _run_training_episode(env, agent, max_steps=max_steps)
+        recent_rewards.append(stats["total_reward"])
+        if len(recent_rewards) > 10:
+            recent_rewards.pop(0)
+
+        avg_reward = sum(recent_rewards) / len(recent_rewards)
+        print(
+            f"[train] episode={episode} reward={stats['total_reward']:.2f} "
+            f"avg_reward_10={avg_reward:.2f} loss={stats['avg_loss']:.5f} "
+            f"epsilon={stats['epsilon']:.3f} score={stats['score']} "
+            f"bricks_left={stats['remaining_bricks']} steps={stats['steps']} "
+            f"optimizer_steps={stats['optimizer_steps']} buffer={stats['buffer_size']}",
+            flush=True,
+        )
+
+        if episode % CHECKPOINT_EVERY_EPISODES == 0:
+            _save_checkpoint(agent, episode)
+
+    _save_checkpoint(agent, agent.episodes_trained)
+
+
 @app.websocket("/ws/play")
 async def websocket_play(websocket: WebSocket):
     """
@@ -84,7 +175,7 @@ async def websocket_play(websocket: WebSocket):
     await websocket.accept()
     print("[server] WebSocket client connected")
 
-    env, agent = _create_agent_and_env()
+    env, agent = _create_agent_and_env(training=False)
     state, _ = env.reset()
 
     # Session stats
@@ -151,58 +242,42 @@ async def websocket_train(websocket: WebSocket):
     await websocket.accept()
     print("[server] Training WebSocket client connected")
 
-    env, agent = _create_agent_and_env()
-
-    # Reset to training exploration values
-    agent.epsilon = 1.0
-    max_steps = 2000
+    env, agent = _create_agent_and_env(training=True)
+    recent_rewards = []
 
     try:
         episode = 1
         while True:
-            state, _ = env.reset()
-            total_reward = 0.0
-            losses = []
-            steps = 0
-            brick_count_history = []
+            stats = _run_training_episode(env, agent, max_steps=TRAIN_MAX_STEPS)
+            recent_rewards.append(stats["total_reward"])
+            if len(recent_rewards) > 10:
+                recent_rewards.pop(0)
+            avg_reward = sum(recent_rewards) / len(recent_rewards)
 
-            for step in range(max_steps):
-                action = agent.select_action(state, training=True)
-                next_state, reward, terminated, truncated, info = env.step(action)
-                done = terminated or truncated
+            if episode % CHECKPOINT_EVERY_EPISODES == 0:
+                _save_checkpoint(agent, agent.episodes_trained)
 
-                agent.store_transition(state, action, reward, next_state, done)
-                loss = agent.train_step()
-                if loss is not None:
-                    losses.append(loss)
+            print(
+                f"[train/ws] episode={agent.episodes_trained} "
+                f"reward={stats['total_reward']:.2f} avg_reward_10={avg_reward:.2f} "
+                f"loss={stats['avg_loss']:.5f} epsilon={stats['epsilon']:.3f} "
+                f"score={stats['score']} bricks_left={stats['remaining_bricks']} "
+                f"steps={stats['steps']} optimizer_steps={stats['optimizer_steps']}",
+                flush=True,
+            )
 
-                brick_count_history.append(info["remaining_bricks"])
-
-                state = next_state
-                total_reward += reward
-                steps += 1
-
-                if done:
-                    break
-
-            # Occasional checkpoints
-            if episode % 25 == 0:
-                try:
-                    agent.save(str(CHECKPOINT_PATH))
-                except Exception as e:
-                    print(f"[server] Failed to save checkpoint: {e}")
-
-            avg_loss = sum(losses) / len(losses) if losses else 0.0
-            final_info = env.get_render_dict()
             msg = {
-                "episode": episode,
-                "steps": steps,
-                "total_reward": float(total_reward),
-                "avg_loss": float(avg_loss),
-                "epsilon": float(agent.epsilon),
-                "score": int(final_info["score"]),
-                "remaining_bricks": int(final_info["remaining_bricks"]),
-                "buffer_size": len(agent.memory),
+                "episode": agent.episodes_trained,
+                "steps": stats["steps"],
+                "total_reward": stats["total_reward"],
+                "avg_reward_10": float(avg_reward),
+                "avg_loss": stats["avg_loss"],
+                "epsilon": stats["epsilon"],
+                "score": stats["score"],
+                "remaining_bricks": stats["remaining_bricks"],
+                "buffer_size": stats["buffer_size"],
+                "optimizer_steps": stats["optimizer_steps"],
+                "checkpoint_path": str(CHECKPOINT_PATH),
             }
             await websocket.send_text(json.dumps(msg))
             episode += 1
@@ -219,9 +294,22 @@ async def websocket_train(websocket: WebSocket):
 
 
 if __name__ == "__main__":
-    uvicorn.run(
-        "server:app",
-        host="127.0.0.1",
-        port=8000,
-        reload=False,
-    )
+    parser = argparse.ArgumentParser(description="Brick Breaker DQN server and trainer")
+    parser.add_argument("--train", action="store_true", help="Run the DQN training loop")
+    parser.add_argument("--episodes", type=int, default=300, help="Training episodes for --train")
+    parser.add_argument("--max-steps", type=int, default=TRAIN_MAX_STEPS, help="Max steps per episode")
+    parser.add_argument("--serve", action="store_true", help="Launch the FastAPI dashboard server")
+    parser.add_argument("--host", default="127.0.0.1", help="Server host")
+    parser.add_argument("--port", type=int, default=8000, help="Server port")
+    args = parser.parse_args()
+
+    if args.train:
+        run_training_loop(num_episodes=args.episodes, max_steps=args.max_steps)
+
+    if args.serve or not args.train:
+        uvicorn.run(
+            "server:app",
+            host=args.host,
+            port=args.port,
+            reload=False,
+        )
