@@ -133,6 +133,11 @@ class BrickBreakerEnv(gym.Env):
         # Clamp paddle to screen bounds
         self.paddle_x = np.clip(self.paddle_x, 0, self.WIDTH - self.PADDLE_WIDTH)
 
+        # Dense shaping reward: keep the paddle horizontally aligned with the ball.
+        paddle_center_x = self.paddle_x + self.PADDLE_WIDTH / 2.0
+        distance_ratio = abs(paddle_center_x - self.ball_x) / self.WIDTH
+        reward += 0.1 * (1.0 - distance_ratio)
+
         # Ball hits wall -> survive
         prev_ball_y = self.ball_y
         prev_ball_x = self.ball_x
@@ -172,7 +177,7 @@ class BrickBreakerEnv(gym.Env):
             # Add variation to ball_dx based on where it hit the paddle
             hit_pos = (self.ball_x - paddle_left) / self.PADDLE_WIDTH  # 0..1
             self.ball_dx = (hit_pos - 0.5) * 2.0 * self.BALL_SPEED
-            reward += 0.1  # Reward for hitting ball with paddle
+            reward += 5.0  # Reward for hitting ball with paddle
 
         # Brick collisions
         for row in range(self.BRICK_ROWS):
@@ -213,11 +218,10 @@ class BrickBreakerEnv(gym.Env):
         # Ball falls below screen (lose life)
         if self.ball_y - self.BALL_RADIUS > self.HEIGHT:
             self.lives -= 1
+            reward += -20.0  # Penalty for dropping the ball
             if self.lives <= 0:
-                reward += -100.0  # Penalty for Game Over
                 terminated = True
             else:
-                reward += -10.0  # Penalty for losing a life
                 # Reset ball to paddle
                 self.ball_x = self.paddle_x + self.PADDLE_WIDTH / 2.0
                 self.ball_y = self.PADDLE_Y - self.BALL_RADIUS - 1
