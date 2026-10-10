@@ -109,6 +109,7 @@ class DQNAgent:
         self.batch_size = batch_size
         self.target_update_freq = target_update_freq
         self.train_step_count = 0
+        self.episodes_trained = 0
 
         # Device selection
         if device is None:
@@ -189,9 +190,9 @@ class DQNAgent:
         torch.nn.utils.clip_grad_norm_(self.policy_net.parameters(), max_norm=1.0)
         self.optimizer.step()
 
-        # Increment counter and decay epsilon
+        # Increment counter. Epsilon decays once per episode so exploration lasts
+        # across hundreds of games instead of disappearing in the first episode.
         self.train_step_count += 1
-        self._decay_epsilon()
 
         # Update target network periodically
         if self.train_step_count % self.target_update_freq == 0:
@@ -199,11 +200,18 @@ class DQNAgent:
 
         return loss.item()
 
-    def _decay_epsilon(self):
+    def decay_epsilon(self):
         """
-        Exponentially decay epsilon from start to end.
+        Exponentially decay epsilon from start to end after each episode.
         """
         self.epsilon = max(self.epsilon_end, self.epsilon * self.epsilon_decay)
+
+    def finish_episode(self):
+        """
+        Record the completed episode and update exploration.
+        """
+        self.episodes_trained += 1
+        self.decay_epsilon()
 
     def save(self, path):
         """
@@ -216,6 +224,7 @@ class DQNAgent:
                 "optimizer_state_dict": self.optimizer.state_dict(),
                 "epsilon": self.epsilon,
                 "train_step_count": self.train_step_count,
+                "episodes_trained": self.episodes_trained,
             },
             path,
         )
@@ -230,6 +239,7 @@ class DQNAgent:
         self.optimizer.load_state_dict(checkpoint["optimizer_state_dict"])
         self.epsilon = checkpoint.get("epsilon", self.epsilon)
         self.train_step_count = checkpoint.get("train_step_count", 0)
+        self.episodes_trained = checkpoint.get("episodes_trained", 0)
 
 
 def train_agent(env, agent, num_episodes=1000, max_steps_per_episode=2000, verbose=True):
@@ -276,6 +286,7 @@ def train_agent(env, agent, num_episodes=1000, max_steps_per_episode=2000, verbo
                 break
 
         episode_rewards.append(total_reward)
+        agent.finish_episode()
 
         if verbose and episode % 10 == 0:
             avg_reward = np.mean(episode_rewards[-10:])
