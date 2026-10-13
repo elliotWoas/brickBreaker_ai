@@ -111,11 +111,16 @@ class DQNAgent:
         self.train_step_count = 0
         self.episodes_trained = 0
 
-        # Device selection
-        if device is None:
-            self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-        else:
-            self.device = torch.device(device)
+        # Fall back to CPU even when CUDA was explicitly requested but is unavailable.
+        cuda_available = torch.cuda.is_available()
+        requested_device = torch.device(
+            device if device is not None else ("cuda" if cuda_available else "cpu")
+        )
+        self.device = (
+            torch.device("cpu")
+            if requested_device.type == "cuda" and not cuda_available
+            else requested_device
+        )
 
         # Networks: policy net (trained each step) and target net (updated periodically)
         self.policy_net = DQN(state_dim, action_dim, hidden_dim).to(self.device)
