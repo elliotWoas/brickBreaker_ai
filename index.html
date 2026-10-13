@@ -188,7 +188,7 @@
 </head>
 <body>
   <h1>Brick Breaker AI</h1>
-  <p class="subtitle">Deep Q-Network playing in real time · 30 FPS over WebSocket</p>
+  <p class="subtitle">Deep Q-Network playing in real time · 60 FPS over WebSocket</p>
 
   <div class="layout">
     <div class="canvas-card">
@@ -396,7 +396,7 @@
       }
 
       ws.addEventListener("open", () => {
-        setStatus("Connected · streaming at 30 FPS.", "ok");
+        setStatus("Connected · streaming at 60 FPS.", "ok");
         btnStart.disabled = true;
         btnStop.disabled  = false;
       });
@@ -445,7 +445,7 @@
       ctx.fillText("Click Start AI Play to begin", canvas.width/2, canvas.height/2 - 10);
       ctx.font = "400 12px system-ui, sans-serif";
       ctx.fillStyle = "#64748b";
-      ctx.fillText("Frames stream via WebSocket at 30 FPS", canvas.width/2, canvas.height/2 + 14);
+      ctx.fillText("Frames stream via WebSocket at 60 FPS", canvas.width/2, canvas.height/2 + 14);
     })();
 
     // ---------- Hook buttons ----------
