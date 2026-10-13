@@ -92,7 +92,7 @@ Runs the FastAPI app and training entry points:
 
 - `GET /`: serves the browser dashboard.
 - `GET /health`: reports whether `dqn_checkpoint.pth` exists.
-- `WS /ws/play`: loads the checkpoint and streams greedy AI gameplay.
+- `WS /ws/play`: loads the checkpoint and streams greedy AI gameplay at 60 FPS.
 - `WS /ws/train`: runs training episodes and streams metrics.
 - `python server.py --train`: runs console pretraining and saves checkpoints.
 - `python server.py --serve`: launches the web dashboard.
@@ -119,6 +119,18 @@ python -m venv .venv
 
 ```powershell
 pip install -r requirements.txt
+```
+
+The requirements pin PyTorch to its CPU-only wheel, so a CUDA toolkit and NVIDIA
+runtime packages are not installed. On Linux, use a fresh virtual environment to
+avoid retaining CUDA packages from an older environment:
+
+```bash
+python3 -m venv .venv-cpu
+source .venv-cpu/bin/activate
+python -m pip cache purge
+python -m pip install --upgrade pip
+python -m pip install --no-cache-dir -r requirements.txt
 ```
 
 ### 3. Pre-train the agent
