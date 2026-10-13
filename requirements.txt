@@ -1,5 +1,8 @@
-torch>=2.0.0
+# Pin the CPU wheel so pip does not select a CUDA build from PyPI.
+--extra-index-url https://download.pytorch.org/whl/cpu
+torch==2.14.1+cpu
 gymnasium>=0.28.0
 fastapi>=0.100.0
 uvicorn>=0.23.0
+websockets>=11.0
 numpy>=1.24.0
