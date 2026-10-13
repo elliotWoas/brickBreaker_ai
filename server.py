@@ -16,8 +16,8 @@ from agent import DQNAgent
 # -----------------------------
 # Configuration
 # -----------------------------
-FPS = 30
-FRAME_INTERVAL = 1.0 / FPS  # ~33ms per frame
+FPS = 60
+FRAME_INTERVAL = 1.0 / FPS  # ~17ms per frame
 
 CHECKPOINT_PATH = Path(__file__).parent / "dqn_checkpoint.pth"
 CHECKPOINT_EVERY_EPISODES = int(os.getenv("CHECKPOINT_EVERY_EPISODES", "5"))
@@ -169,7 +169,7 @@ def run_training_loop(num_episodes=300, max_steps=TRAIN_MAX_STEPS):
 @app.websocket("/ws/play")
 async def websocket_play(websocket: WebSocket):
     """
-    WebSocket endpoint that streams game frames at ~30 FPS while the AI plays.
+    WebSocket endpoint that streams game frames at ~60 FPS while the AI plays.
     Each frame is a JSON object with full render state.
     """
     await websocket.accept()
@@ -219,7 +219,7 @@ async def websocket_play(websocket: WebSocket):
                 await asyncio.sleep(0.5)
                 state, _ = env.reset()
 
-            # Throttle to ~30 FPS
+            # Throttle to ~60 FPS
             await asyncio.sleep(FRAME_INTERVAL)
 
     except WebSocketDisconnect:
