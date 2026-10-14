@@ -99,6 +99,12 @@ Runs the FastAPI app and training entry points:
 
 During training, the server logs episode reward, rolling average reward, loss,
 epsilon, score, remaining bricks, replay-buffer size, and optimizer-step count.
+CPU training defaults to one PyTorch thread, which is fastest for this small
+network on the tested CPU. Set `TRAIN_CPU_THREADS` to override it; the terminal also reports elapsed time,
+episodes per second, and environment steps per second. Training performs one
+optimizer update every four environment steps by default; use
+`--train-every 1` to update after every step if you prefer more frequent learning
+updates over throughput.
 
 ### `index.html`
 
