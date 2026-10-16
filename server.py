@@ -2,8 +2,10 @@ import asyncio
 import argparse
 import json
 import os
+import time
 from pathlib import Path
 
+import torch
 import uvicorn
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse
@@ -22,6 +24,8 @@ FRAME_INTERVAL = 1.0 / FPS  # ~17ms per frame
 CHECKPOINT_PATH = Path(__file__).parent / "dqn_checkpoint.pth"
 CHECKPOINT_EVERY_EPISODES = int(os.getenv("CHECKPOINT_EVERY_EPISODES", "5"))
 TRAIN_MAX_STEPS = int(os.getenv("TRAIN_MAX_STEPS", "2000"))
+TRAIN_CPU_THREADS = max(1, int(os.getenv("TRAIN_CPU_THREADS", "1")))
+TRAIN_UPDATE_INTERVAL = int(os.getenv("TRAIN_UPDATE_INTERVAL", "4"))
 
 # Brick colors per row (top -> bottom)
 BRICK_COLORS = [
@@ -53,6 +57,9 @@ def health_check():
 
 def _create_agent_and_env(training=False):
     """Build the environment and DQN agent used for playback or training."""
+    if training and not torch.cuda.is_available():
+        torch.set_num_threads(TRAIN_CPU_THREADS)
+
     env = BrickBreakerEnv()
     state_dim = env.observation_space.shape[0]
     action_dim = env.action_space.n
@@ -91,8 +98,16 @@ def _save_checkpoint(agent, episode):
         print(f"[train] failed to save checkpoint after episode {episode}: {e}", flush=True)
 
 
-def _run_training_episode(env, agent, max_steps=TRAIN_MAX_STEPS):
+def _run_training_episode(
+    env,
+    agent,
+    max_steps=TRAIN_MAX_STEPS,
+    train_every=TRAIN_UPDATE_INTERVAL,
+):
     """Run one full training episode, including replay optimization steps."""
+    if train_every < 1:
+        raise ValueError("train_every must be at least 1")
+
     state, _ = env.reset()
     total_reward = 0.0
     losses = []
@@ -105,7 +120,7 @@ def _run_training_episode(env, agent, max_steps=TRAIN_MAX_STEPS):
         done = terminated or truncated
 
         agent.store_transition(state, action, reward, next_state, done)
-        loss = agent.train_step()
+        loss = agent.train_step() if (step + 1) % train_every == 0 else None
         if loss is not None:
             losses.append(loss)
 
@@ -132,31 +147,54 @@ def _run_training_episode(env, agent, max_steps=TRAIN_MAX_STEPS):
     }
 
 
-def run_training_loop(num_episodes=300, max_steps=TRAIN_MAX_STEPS):
+def run_training_loop(
+    num_episodes=300,
+    max_steps=TRAIN_MAX_STEPS,
+    train_every=TRAIN_UPDATE_INTERVAL,
+):
     """Run pretraining from the console and persist checkpoints regularly."""
+    if train_every < 1:
+        raise ValueError("train_every must be at least 1")
+
     env, agent = _create_agent_and_env(training=True)
     recent_rewards = []
 
     print(
         f"[train] starting training for {num_episodes} episodes | "
         f"epsilon={agent.epsilon:.3f}, decay={agent.epsilon_decay}, "
-        f"checkpoint_every={CHECKPOINT_EVERY_EPISODES}",
+        f"checkpoint_every={CHECKPOINT_EVERY_EPISODES}, "
+        f"cpu_threads={TRAIN_CPU_THREADS if not torch.cuda.is_available() else 'n/a'}, "
+        f"train_every={train_every}",
         flush=True,
     )
 
-    for episode in range(agent.episodes_trained + 1, agent.episodes_trained + num_episodes + 1):
-        stats = _run_training_episode(env, agent, max_steps=max_steps)
+    training_started = time.perf_counter()
+    total_steps = 0
+    first_episode = agent.episodes_trained + 1
+    for episode in range(first_episode, first_episode + num_episodes):
+        stats = _run_training_episode(
+            env,
+            agent,
+            max_steps=max_steps,
+            train_every=train_every,
+        )
+        total_steps += stats["steps"]
         recent_rewards.append(stats["total_reward"])
         if len(recent_rewards) > 10:
             recent_rewards.pop(0)
 
         avg_reward = sum(recent_rewards) / len(recent_rewards)
+        elapsed = time.perf_counter() - training_started
+        completed_episodes = episode - first_episode + 1
         print(
             f"[train] episode={episode} reward={stats['total_reward']:.2f} "
             f"avg_reward_10={avg_reward:.2f} loss={stats['avg_loss']:.5f} "
             f"epsilon={stats['epsilon']:.3f} score={stats['score']} "
             f"bricks_left={stats['remaining_bricks']} steps={stats['steps']} "
-            f"optimizer_steps={stats['optimizer_steps']} buffer={stats['buffer_size']}",
+            f"optimizer_steps={stats['optimizer_steps']} buffer={stats['buffer_size']} "
+            f"elapsed={elapsed:.1f}s "
+            f"ep/s={completed_episodes / max(elapsed, 1e-9):.2f} "
+            f"steps/s={total_steps / max(elapsed, 1e-9):.1f}",
             flush=True,
         )
 
@@ -298,13 +336,23 @@ if __name__ == "__main__":
     parser.add_argument("--train", action="store_true", help="Run the DQN training loop")
     parser.add_argument("--episodes", type=int, default=300, help="Training episodes for --train")
     parser.add_argument("--max-steps", type=int, default=TRAIN_MAX_STEPS, help="Max steps per episode")
+    parser.add_argument(
+        "--train-every",
+        type=int,
+        default=TRAIN_UPDATE_INTERVAL,
+        help="Run one optimizer update every N environment steps",
+    )
     parser.add_argument("--serve", action="store_true", help="Launch the FastAPI dashboard server")
     parser.add_argument("--host", default="127.0.0.1", help="Server host")
     parser.add_argument("--port", type=int, default=8000, help="Server port")
     args = parser.parse_args()
 
     if args.train:
-        run_training_loop(num_episodes=args.episodes, max_steps=args.max_steps)
+        run_training_loop(
+            num_episodes=args.episodes,
+            max_steps=args.max_steps,
+            train_every=args.train_every,
+        )
 
     if args.serve or not args.train:
         uvicorn.run(
